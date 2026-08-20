@@ -20,9 +20,9 @@ func NewToolPing() core.Tool {
 	return &toolPing{
 		title: "Ping",
 		stages: []core.Stage{
-			core.NewTextInputStage("名前", "名前を入力してください", 20),
-			core.NewChoiceStage("モード選択", []string{"Option 1", "Option 2"}, core.SelectSingle),
-			core.NewChoiceStage("機能選択", []string{"Option A", "Option B", "Option C"}, core.SelectMultiple),
+			core.NewTextInputStage("Message: ", "Input message that you want to ping", 20),
+			core.NewChoiceStage("Mode: ", []string{"English", "Japanese"}, core.SelectSingle),
+			core.NewChoiceStage("Additional: ", []string{"Bold", "Italic", "Underline"}, core.SelectMultiple),
 		},
 	}
 }
@@ -96,7 +96,6 @@ func (t *toolPing) Update(msg tea.Msg) (core.Tool, tea.Cmd) {
 		case "enter":
 			switch s.SelectType {
 			case core.SelectSingle:
-				s.Result = fmt.Sprintf("%s: %s", s.StepName, s.Options[s.Cursor])
 			case core.SelectMultiple:
 				chosen := make([]string, 0, len(s.Selected))
 				for i, opt := range s.Options {
@@ -104,12 +103,17 @@ func (t *toolPing) Update(msg tea.Msg) (core.Tool, tea.Cmd) {
 						chosen = append(chosen, opt)
 					}
 				}
-				s.Result = fmt.Sprintf("%s: %s", s.StepName, strings.Join(chosen, ","))
+				ping()
+				s.Result = fmt.Sprintf("完了しました。")
 			}
 			return t, t.advance()
 		}
 	}
 	return t, nil
+}
+
+func ping() {
+
 }
 
 func (t *toolPing) View() tea.View {
