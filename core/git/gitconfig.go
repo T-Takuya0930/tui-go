@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -199,6 +200,28 @@ func parseSection(line string) (string, string) {
 	}
 
 	return body, ""
+}
+
+func ParseGitConfig() ([]UserProfile, error) {
+	nameCmd := exec.Command("git", "config", "--global", "--get", "user.name")
+	emailCmd := exec.Command("git", "config", "--global", "--get", "user.email")
+
+	name, err := nameCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get git user.name: %w", err)
+	}
+
+	email, err := emailCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get git user.email: %w", err)
+	}
+
+	return []UserProfile{
+		{
+			Name:  strings.TrimSpace(string(name)),
+			Email: strings.TrimSpace(string(email)),
+		},
+	}, nil
 }
 
 func parseAssignment(line string) (string, string, bool) {
