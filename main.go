@@ -3,72 +3,101 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"tui-go/commands"
+	"tui-go/core"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 type model struct {
-	choices  []string         // items on the to-do list
-	cursor   int              // which to-do list item our cursor is pointing at
-	selected map[int]struct{} // which to-do items are selected
+	cursor int
+	active core.Tool
+	result string
+	isErr  bool
 }
 
-func initModel() model {
-	return model{
-		choices:  []string{"a: abc", "b: 123"},
-		cursor:   0,
-		selected: make(map[int]struct{}),
+func initialModel() model { return model{} }
+
+func (m model) Init() tea.Cmd { return nil }
+
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.active != nil {
+		if done, ok := msg.(core.ToolDoneMsg); ok {
+			m.active = nil
+			if done.Err != nil {
+				m.result = done.Err.Error()
+				m.isErr = true
+			} else if done.Result != "" {
+				m.result = done.Result
+				m.isErr = false
+			}
+			return m, nil
+		}
+		newTool, cmd := m.active.Update(msg)
+		m.active = newTool
+		return m, cmd
 	}
-}
 
-func Init() tea.Cmd {
-	return nil
-}
-
-func update(model model, msg tea.Msg) (model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "q", "esc", "ctrl-c":
-			return model, tea.Quit
+		case "q", "ctrl+c":
+			return m, tea.Quit
 		case "up", "k":
-			if model.cursor > 0 {
-				model.cursor--
+			if m.cursor > 0 {
+				m.cursor--
 			}
 		case "down", "j":
-			if model.cursor < len(model.choices)-1 {
-				model.cursor++
+			if m.cursor < len(commands.Registry)-1 {
+				m.cursor++
 			}
-		case " ", "enter":
-			return model, nil
+		case "enter", " ":
+			m.result = ""
+			m.active = commands.Registry[m.cursor].New()
+			return m, m.active.Init()
 		}
 	}
-	return model, nil
+	return m, nil
 }
 
-func View(model model) string {
-	s := "This is test"
-	for i, choice := range model.choices {
-		cursor := " "
-		if i == model.cursor {
-			cursor = ">"
-		}
-		s += cursor + " " + choice + "\n"
-
-		selected := " "
-		if _, ok := model.selected[i]; ok {
-			selected = "x"
-		}
-		s += selected + " " + choice + "\n"
+func (m model) View() tea.View {
+	if m.active != nil {
+		v := m.active.View()
+		v.AltScreen = true
+		return v
 	}
-	return s
+
+	var body strings.Builder
+	body.WriteString(core.TitleStyle.Render("🛠  ツールランチャー"))
+	body.WriteString("\n\n")
+
+	for i, t := range commands.Registry {
+		body.WriteString(core.RenderCursor(i == m.cursor, t.Label))
+		body.WriteString("\n")
+	}
+
+	if m.result != "" {
+		body.WriteString("\n")
+		if m.isErr {
+			body.WriteString(core.ResultErrStyle.Render("✗ " + m.result))
+		} else {
+			body.WriteString(core.ResultOKStyle.Render("✓ " + m.result))
+		}
+		body.WriteString("\n")
+	}
+
+	body.WriteString(core.RenderHelp("↑/↓ 移動", "Enter 選択", "q 終了"))
+
+	return tea.NewView(core.BoxStyle.Render(body.String()))
 }
 
 func main() {
-	p := tea.NewProgram(initModel())
+
+	p := tea.NewProgram(initialModel())
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Alas, there's been an error: %v", err)
 		os.Exit(1)
 	}
-
 }
