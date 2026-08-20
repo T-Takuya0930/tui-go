@@ -43,7 +43,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "q", "ctrl+c":
+		case "q", "ctrl+c", "esc":
 			return m, tea.Quit
 		case "up", "k":
 			if m.cursor > 0 {
@@ -81,9 +81,9 @@ func (m model) View() tea.View {
 	if m.result != "" {
 		body.WriteString("\n")
 		if m.isErr {
-			body.WriteString(core.ResultErrStyle.Render("✗ " + m.result))
+			body.WriteString(core.ResultErrStyle.Render("✗ ") + m.result)
 		} else {
-			body.WriteString(core.ResultOKStyle.Render("✓ " + m.result))
+			body.WriteString(core.ResultOKStyle.Render("✓ ") + m.result)
 		}
 		body.WriteString("\n")
 	}

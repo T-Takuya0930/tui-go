@@ -1,14 +1,13 @@
 package core
 
 import (
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
-
-// ===== Tool 共通インターフェース =====
 
 type Tool interface {
 	Init() tea.Cmd
@@ -114,7 +113,30 @@ var (
 	ResultErrStyle = lipgloss.NewStyle().
 			Foreground(ColorError).
 			Bold(true)
+
+	BoldStyle = lipgloss.NewStyle().
+			Bold(true)
+
+	ItalicStyle = lipgloss.NewStyle().
+			Italic(true)
+
+	UnderlineStyle = lipgloss.NewStyle().
+			Underline(true)
 )
+
+func RenderStyled(text string, options []string) string {
+	style := lipgloss.NewStyle()
+	if slices.Contains(options, "Bold") {
+		style = style.Bold(true)
+	}
+	if slices.Contains(options, "Italic") {
+		style = style.Italic(true)
+	}
+	if slices.Contains(options, "Underline") {
+		style = style.Underline(true)
+	}
+	return style.Render(text)
+}
 
 func RenderCursor(active bool, mark string) string {
 	if active {

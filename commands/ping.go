@@ -1,159 +1,63 @@
 package commands
 
 import (
-	"fmt"
 	"strings"
 
 	"tui-go/core"
 
-	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 )
 
 type toolPing struct {
-	title  string
-	idx    int
-	stages []core.Stage
+	runner core.StageRunner
 }
 
 func NewToolPing() core.Tool {
 	return &toolPing{
-		title: "Ping",
-		stages: []core.Stage{
-			core.NewTextInputStage("Message: ", "Input message that you want to ping", 20),
+		runner: core.NewStageRunner("Ping", []core.Stage{
+			core.NewTextInputStage("Message: ", "Input message that you want to ping", 40),
 			core.NewChoiceStage("Mode: ", []string{"English", "Japanese"}, core.SelectSingle),
 			core.NewChoiceStage("Additional: ", []string{"Bold", "Italic", "Underline"}, core.SelectMultiple),
-		},
+		}),
 	}
 }
 
-func (t *toolPing) Init() tea.Cmd { return textinput.Blink }
-
-func (t *toolPing) advance() tea.Cmd {
-	t.idx++
-	if t.idx >= len(t.stages) {
-		return core.ToolDone(t.summary(), nil)
-	}
-	if t.stages[t.idx].Kind == core.StageInput {
-		t.stages[t.idx].TextInput.Focus()
-		return textinput.Blink
-	}
-	return nil
-}
-
-func (t *toolPing) summary() string {
-	parts := make([]string, 0, len(t.stages))
-	for _, s := range t.stages {
-		if s.Result != "" {
-			parts = append(parts, s.Result)
-		}
-	}
-	return strings.Join(parts, " / ")
-}
+func (t *toolPing) Init() tea.Cmd { return t.runner.Init() }
 
 func (t *toolPing) Update(msg tea.Msg) (core.Tool, tea.Cmd) {
 	km, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return t, nil
 	}
-	if t.idx >= len(t.stages) {
-		return t, nil
-	}
-	s := &t.stages[t.idx]
 
-	if km.String() == "esc" {
+	advanced, canceled, cmd := t.runner.HandleKey(km)
+	if canceled {
 		return t, core.ToolDone("", nil)
 	}
-
-	switch s.Kind {
-	case core.StageInput:
-		if km.String() == "enter" {
-			s.Result = s.TextInput.Value()
-			return t, t.advance()
+	if advanced && t.runner.Done() {
+		text := t.runner.Stages[0].Result
+		language := t.runner.Stages[1].Result
+		var chosen []string
+		if t.runner.Stages[2].Result != "" {
+			chosen = strings.Split(t.runner.Stages[2].Result, ",")
 		}
-		var cmd tea.Cmd
-		s.TextInput, cmd = s.TextInput.Update(msg)
-		return t, cmd
-
-	case core.StageChoice:
-		switch km.String() {
-		case "up", "k":
-			if s.Cursor > 0 {
-				s.Cursor--
-			}
-		case "down", "j":
-			if s.Cursor < len(s.Options)-1 {
-				s.Cursor++
-			}
-		case " ", "space":
-			if s.SelectType == core.SelectMultiple {
-				if _, ok := s.Selected[s.Cursor]; ok {
-					delete(s.Selected, s.Cursor)
-				} else {
-					s.Selected[s.Cursor] = struct{}{}
-				}
-			}
-		case "enter":
-			switch s.SelectType {
-			case core.SelectSingle:
-			case core.SelectMultiple:
-				chosen := make([]string, 0, len(s.Selected))
-				for i, opt := range s.Options {
-					if _, ok := s.Selected[i]; ok {
-						chosen = append(chosen, opt)
-					}
-				}
-				ping()
-				s.Result = fmt.Sprintf("完了しました。")
-			}
-			return t, t.advance()
-		}
+		return t, core.ToolDone(ping(text, language, chosen), nil)
 	}
-	return t, nil
+	return t, cmd
 }
 
-func ping() {
+func (t *toolPing) View() tea.View { return t.runner.View() }
 
-}
-
-func (t *toolPing) View() tea.View {
-	if t.idx >= len(t.stages) {
-		return tea.NewView("")
+func ping(text string, language string, option []string) string {
+	var result string
+	language = strings.ReplaceAll(language, " ", "")
+	switch language {
+	case "Japanese":
+		result = "pingメッセージです: " + text
+	case "English":
+		result = "ping message: " + text
+	default:
+		return "Error: unknown language"
 	}
-	s := &t.stages[t.idx]
-
-	var body strings.Builder
-	body.WriteString(core.TitleStyle.Render(t.title))
-	body.WriteString("\n")
-	body.WriteString(core.ProgressStyle.Render(fmt.Sprintf("ステップ %d/%d ・ %s", t.idx+1, len(t.stages), s.StepName)))
-	body.WriteString("\n\n")
-
-	switch s.Kind {
-	case core.StageInput:
-		body.WriteString(s.TextInput.View())
-		body.WriteString("\n")
-		body.WriteString(core.RenderHelp("Enter 次へ", "Esc 中止"))
-
-	case core.StageChoice:
-		for i, opt := range s.Options {
-			active := i == s.Cursor
-			mark := ""
-			if s.SelectType == core.SelectMultiple {
-				if _, ok := s.Selected[i]; ok {
-					mark = core.CheckedStyle.Render("[x] ")
-				} else {
-					mark = "[ ] "
-				}
-			}
-			body.WriteString(core.RenderCursor(active, mark+opt))
-			body.WriteString("\n")
-		}
-		if s.SelectType == core.SelectMultiple {
-			body.WriteString(core.RenderHelp("↑/↓ 移動", "Space トグル", "Enter 確定", "Esc 中止"))
-		} else {
-			body.WriteString(core.RenderHelp("↑/↓ 移動", "Enter 確定", "Esc 中止"))
-		}
-	}
-
-	return tea.NewView(core.BoxStyle.Render(body.String()))
+	return core.RenderStyled(result, option)
 }
