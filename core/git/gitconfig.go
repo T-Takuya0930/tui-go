@@ -2,123 +2,306 @@ package git
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 )
 
-// UserProfile は gitconfig から抽出した名前とメールのペアを保持します。
+// UserProfile は Git config から抽出したユーザープロファイルです。
 type UserProfile struct {
-	Name  string
-	Email string
+	Profile string
+	Name    string
+	Email   string
+	Source  string
 }
 
-// ParseGitConfig は ~/.gitconfig および include/includeIf で参照されている設定ファイルをパースし、
-// 検出されたユーザープロファイルの一覧を返します。
-func ParseGitConfig() ([]UserProfile, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
+// Label は TUI 上で表示するラベルを返します。
+func (p UserProfile) Label() string {
+	if p.Profile == "" || p.Profile == "default" {
+		return fmt.Sprintf("%s <%s>", p.Name, p.Email)
+	}
+
+	return fmt.Sprintf("%s: %s <%s>", p.Profile, p.Name, p.Email)
+}
+
+type profile struct {
+	Profile string
+	Name    string
+	Email   string
+	Source  string
+}
+
+type configParser struct {
+	visited  map[string]bool
+	profiles map[string]*profile
+}
+
+// LoadUserProfiles は ~/.gitconfig と include/includeIf されたファイルから
+// [user] の name/email を抽出します。
+func LoadUserProfiles(path string) ([]UserProfile, error) {
+	parser := &configParser{
+		visited:  make(map[string]bool),
+		profiles: make(map[string]*profile),
+	}
+
+	if err := parser.parseFile(path, "default"); err != nil {
 		return nil, err
 	}
 
-	mainConfigPath := filepath.Join(home, ".gitconfig")
-	profiles := make([]UserProfile, 0)
-	visited := make(map[string]bool)
+	profiles := make([]UserProfile, 0, len(parser.profiles))
 
-	parseConfigFile(mainConfigPath, &profiles, visited)
-
-	// 重複プロファイルの除外処理
-	uniqueProfiles := make([]UserProfile, 0, len(profiles))
-	seen := make(map[string]bool)
-	for _, p := range profiles {
-		if p.Name == "" && p.Email == "" {
+	for _, p := range parser.profiles {
+		if strings.TrimSpace(p.Name) == "" ||
+			strings.TrimSpace(p.Email) == "" {
 			continue
 		}
-		key := p.Name + "<" + p.Email + ">"
-		if !seen[key] {
-			seen[key] = true
-			uniqueProfiles = append(uniqueProfiles, p)
-		}
+
+		profiles = append(profiles, UserProfile{
+			Profile: p.Profile,
+			Name:    p.Name,
+			Email:   p.Email,
+			Source:  p.Source,
+		})
 	}
 
-	return uniqueProfiles, nil
+	sort.Slice(profiles, func(i, j int) bool {
+		if profiles[i].Profile == "default" {
+			return true
+		}
+		if profiles[j].Profile == "default" {
+			return false
+		}
+
+		return profiles[i].Label() < profiles[j].Label()
+	})
+
+	return profiles, nil
 }
 
-func parseConfigFile(filePath string, profiles *[]UserProfile, visited map[string]bool) {
-	cleanPath := filepath.Clean(filePath)
-	if visited[cleanPath] {
-		return
-	}
-	visited[cleanPath] = true
-
-	file, err := os.Open(cleanPath)
+func (p *configParser) parseFile(path string, profileName string) error {
+	abs, err := filepath.Abs(path)
 	if err != nil {
-		return // ファイルが存在しない、または読み込めない場合はスキップ（フォールバック）
+		return err
+	}
+
+	abs = filepath.Clean(abs)
+
+	if p.visited[abs] {
+		return nil
+	}
+
+	p.visited[abs] = true
+
+	file, err := os.Open(abs)
+	if err != nil {
+		return err
 	}
 	defer file.Close()
 
+	section := ""
+	subsection := ""
+
 	scanner := bufio.NewScanner(file)
-	var currentSection string
-	var currentProfile UserProfile
-	dir := filepath.Dir(cleanPath)
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 
-		// 空行やコメントをスキップ
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+		if line == "" ||
+			strings.HasPrefix(line, "#") ||
+			strings.HasPrefix(line, ";") {
 			continue
 		}
 
-		// セクションの判定
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			if currentProfile.Name != "" || currentProfile.Email != "" {
-				*profiles = append(*profiles, currentProfile)
-				currentProfile = UserProfile{}
+		if strings.HasPrefix(line, "[") &&
+			strings.HasSuffix(line, "]") {
+			section, subsection = parseSection(line)
+			continue
+		}
+
+		key, value, ok := parseAssignment(line)
+		if !ok {
+			continue
+		}
+
+		switch strings.ToLower(section) {
+		case "include", "includeif":
+			if strings.EqualFold(key, "path") {
+				for _, includePath := range expandIncludePath(
+					value,
+					filepath.Dir(abs),
+				) {
+					if _, err := os.Stat(includePath); err != nil {
+						continue
+					}
+
+					nextProfile := profileNameForPath(
+						includePath,
+						profileName,
+					)
+
+					if err := p.parseFile(
+						includePath,
+						nextProfile,
+					); err != nil {
+						return err
+					}
+				}
 			}
-			currentSection = strings.ToLower(strings.TrimSpace(line[1 : len(line)-1]))
-			continue
-		}
 
-		// キーと値の分割
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := strings.ToLower(strings.TrimSpace(parts[0]))
-		val := strings.TrimSpace(parts[1])
-		val = strings.Trim(val, "\"") // クォーテーションの削除
-
-		// [user] セクション内の解析
-		if currentSection == "user" {
-			if key == "name" {
-				currentProfile.Name = val
-			} else if key == "email" {
-				currentProfile.Email = val
+		case "user":
+			// 通常の [user] は default または include 元の
+			// プロファイル名を利用します。
+			name := profileName
+			if subsection != "" {
+				name = subsection
 			}
-		}
 
-		// [include] または [includeIf ...] セクション内の path 属性のパース
-		if strings.HasPrefix(currentSection, "include") && key == "path" {
-			incPath := resolvePath(val, dir)
-			parseConfigFile(incPath, profiles, visited)
+			if name == "" {
+				name = "default"
+			}
+
+			key := abs + "\x00" + name
+
+			current := p.profiles[key]
+			if current == nil {
+				current = &profile{
+					Profile: name,
+					Source:  abs,
+				}
+				p.profiles[key] = current
+			}
+
+			switch strings.ToLower(key) {
+			case "name":
+				current.Name = value
+			case "email":
+				current.Email = value
+			}
 		}
 	}
 
-	if currentProfile.Name != "" || currentProfile.Email != "" {
-		*profiles = append(*profiles, currentProfile)
-	}
+	return scanner.Err()
 }
 
-func resolvePath(pathStr, baseDir string) string {
-	if strings.HasPrefix(pathStr, "~/") {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			return filepath.Join(home, pathStr[2:])
+func parseSection(line string) (string, string) {
+	body := strings.TrimSpace(line[1 : len(line)-1])
+
+	if index := strings.IndexByte(body, '"'); index >= 0 {
+		section := strings.TrimSpace(body[:index])
+		subsection := strings.TrimSpace(body[index:])
+
+		if value, err := strconv.Unquote(subsection); err == nil {
+			return section, value
 		}
 	}
-	if !filepath.IsAbs(pathStr) {
-		return filepath.Join(baseDir, pathStr)
+
+	return body, ""
+}
+
+func parseAssignment(line string) (string, string, bool) {
+	index := strings.IndexByte(line, '=')
+
+	if index < 0 {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			return "", "", false
+		}
+
+		return fields[0], strings.Join(fields[1:], " "), true
 	}
-	return pathStr
+
+	key := strings.TrimSpace(line[:index])
+	value := strings.TrimSpace(line[index+1:])
+
+	if key == "" {
+		return "", "", false
+	}
+
+	return key, cleanValue(value), true
+}
+
+func cleanValue(value string) string {
+	value = strings.TrimSpace(value)
+
+	if value == "" {
+		return ""
+	}
+
+	if strings.HasPrefix(value, `"`) {
+		if parsed, err := strconv.Unquote(value); err == nil {
+			return parsed
+		}
+	}
+
+	inQuote := false
+
+	for i := 0; i < len(value); i++ {
+		switch value[i] {
+		case '"':
+			inQuote = !inQuote
+
+		case '#', ';':
+			if !inQuote &&
+				(i == 0 ||
+					value[i-1] == ' ' ||
+					value[i-1] == '\t') {
+				return strings.TrimSpace(value[:i])
+			}
+		}
+	}
+
+	return strings.TrimSpace(value)
+}
+
+func expandIncludePath(value string, baseDir string) []string {
+	value = strings.TrimSpace(value)
+
+	if value == "" {
+		return nil
+	}
+
+	if strings.HasPrefix(value, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			value = filepath.Join(home, value[2:])
+		}
+	}
+
+	if !filepath.IsAbs(value) {
+		value = filepath.Join(baseDir, value)
+	}
+
+	matches, err := filepath.Glob(value)
+	if err != nil {
+		return nil
+	}
+
+	if len(matches) == 0 {
+		return []string{value}
+	}
+
+	return matches
+}
+
+func profileNameForPath(path string, fallback string) string {
+	base := filepath.Base(path)
+
+	// ~/.gitconfig は default として扱います。
+	if base == ".gitconfig" {
+		return fallback
+	}
+
+	// 例:
+	// ~/.gitconfig-personal -> personal
+	// ~/.config/git/work -> work
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	base = strings.TrimPrefix(base, ".gitconfig-")
+
+	if base == "" {
+		return fallback
+	}
+
+	return base
 }
